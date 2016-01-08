@@ -1,0 +1,171 @@
+\documentclass[a4paper]{article}
+
+\usepackage[english]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage[colorinlistoftodos]{todonotes}
+
+\title{Implementation and analysis of AI agents for PacMan v6.2}
+
+\author{Scott Lee, Jim Dong, Nabeel Abdur Rehman}
+
+\date{December 4, 2015}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+
+This paper details the implementation and performance of 13 Artificial Intelligence agents using the Pacman V6.2 framework. \textbf{The efforts we made first in Pokeman Showdown and then in Pacman (Python version) shall not be discussed below.} 
+
+\section{Implementation} 
+
+\subsection{General Notes}
+
+There are several general implementation methods and notes that apply across all of the implemented algorithms.
+\newline
+First, almost all of the algorithms implemented here disallow PacMan from reversing direction.  Allowing direction reversal was found to increase runtime substantially, and in some cases resulted in PacMan constantly reversing direction, effectively trapping the player. This was especially prevalent in algorithms that were liable to use up all of their alloted time (Breadth-First, Depth-First). This had the side effect of locking PacMan into a movement so long as he was in a corridor. However, this side effect was mitigated by the nature of the lookahead implementation.
+\newline
+For the algorithms in this project, the states do not branch states at every frame, nor do they branch at every iteration of the \texttt{AdvanceGame} function in the forward model simulation.  Instead, branches are created whenever PacMan reaches an intersection (any point in which a non-reversing PacMan has more than one option).  This converts the maze into a graph, with intersections being nodes, and edges corridors.  This was done in order to maximize the foresight of the algorithms.  Because time is limited to 40 milliseconds per frame, attempting to consider and branch from each individual frame is impractically expensive, reducing the effective range of foresight.  On the computer on which it was developed, the A* algorithm found to consider nodes up to a depth of 100 before timing out.  PacMan passes roughly 6 intersections every 100 frames.  Therefore, if nodes were representations of frames rather than intersections, the foresight of the forward model would be reduced by roughly 94 percent.  The increase in foresight has the added benefit of being able to predict death resulting from certain moves with a much higher degree of accuracy.  This is helpful in ameliorating the issues presented by the prohibition of reversal in the implemented algorithms.  However, the refusal to branch at every frame also means that should the predictive model be incorrect in predicting ghost decisions, it may doom PacMan to certain death.  In the implementations, this was found to happen rarely enough such that such an imperfection is acceptable relative to the runtime and foresight gains.  In the tree-search algorithms, this is implemented as two while loops: the former moving PacMan off the intersection, and the latter progressing the forward model until PacMan reaches an intersection.  In the optimization algorithms, this appears as a function called \texttt{proceed}, which serves largely the same purpose.
+\newline
+Several parts of the implementation are a direct result of certain aspects of the PacMan vs Ghosts framework.  The usage of the \texttt{getCurrentLevel} function is because the framework will never have the number of pills be 0 (the goal state).  As soon as a goal state is reached, the game moves on to the next level, so using just the number of active pills was insufficient in measuring whether or not the algorithm had found a goal state.  Additionally, \texttt{isJunction} conceptualizes intersections differently from the way the algorithms required, and therefore was not used.  Instead, the algorithm makes use of \texttt{getPossibleMoves}.  Finally, MOVE.NEUTRAL was found to be equivalent to the last move made.  This means that constantly returning MOVE.NEUTRAL will not allow players to turn corners.  Because this resulted in PacMan being trapped in bends in the forward model simulation, the while loops in \texttt{proceed} instead make use of \texttt{getPossibleMoves[0]}. 
+
+\subsection{Breadth-First}
+
+The function places \texttt{BFSNode} objects into a queue, processes them, and places the branching states at the end of the queue.  States that are predicted to lead to death according to the forward model are ignored, while states in which PacMan survives are added to the back of the queue.  If a goal state is found, the function returns the base move of the \texttt{BFSNode} in which the goal state is reached.  To account for the possibility of a timeout, a running tally is maintained within the function, keeping track of the best state investigated since the beginning of the loop.  The metric for this measurement is the number of dots remaining, with less being more valuable.  The rationale for this behavior is the assumption that if a goal state cannot be found, reaching a good state is still an acceptable outcome.
+
+\subsection{Depth-First}
+The DFS algorithm is very similar to the implementation of the BFS algorithm as described above with the exception of three details. First, we used a stack which allows us to explore the deepest possible state until backtracking. Since full depth exploration is not feasible--it would time out, we limited the depth to 50. 50 was chosen as A* was shown to be able to find a solution from beginning to end in roughly 100 layers, but anything past 50 proved to be impractically high. The second change is when we added the BFSNode. All nodes expanded within the depth limit that do not lead to death will be added to the top of the stack.  Finally, this algorithm does not keep track of the best state found in the search.  If a move is being no longer considered, it is because it cannot lead to a goal state in the allotted depth, and only one base move is considered at a time.
+
+\subsection{Iterative Deepening}
+Iterative deepening is essentially Depth Limited Search that was described above with the exception that the depth is initially a small number and the number increases with each iteration. We have the depthLimitMax to be 5. Until the depth-limit is reached, this operates exactly like a depth limited search.  Once the depth limit is reached, the limit is increased  by 1, and the search starts again from the root. For the same reasons as those outlined in Depth-First Search, there is not enough reason to keep track of the best move, so the function simply returns what is currently in the stack.    
+
+\subsection{A*}
+A* is essentially a Breadth first search with a memory of the cost of arriving to a particular node from the initial node. We used a priority queue and overloaded the \texttt{Comparator} to be able to compare BFSNodes by the its \texttt{getGoodness} function. The goodness of a state is just the number of total pills minus the number of pills currently active (essentially the number of pills consumed) multiplied by a coefficient value that decreases with respect to time (the more time taken to reach this state, the lower the goodness). At any point, the algorithm will be investigating the BFSNode with the highest goodness. The priority queue already sorts the BFSNodes in this order so we just need to remove the next item.  The base move is returned if the the number of active pills is zero, or it has exceeded the time limit, or if the current state and the game state are on a different level.  If time limit is exceeded or if there is a unhandled case when a move needs to be made, the default move of BFSNode on top of the queue will be made.  The rationale here is that the top of the priority queue will be the best state currently in the queue.
+
+\subsection{Alpha-Beta Pruning}
+Function \texttt{AlphaBetascore} performs the depth limited MinMax algorithm with Alpha Beta pruning. It takes in as argument and also returns a node \texttt{MMNode} which comprises of a Game state, previous game state, depth of node, move taken to reach that node from its parent and the goodness value. The goodness value is just the state's game score. If the state has the pacman being eaten, the goodness score will weighted very negatively. For a given game state, the function finds the possible Pacman moves that can be taken. It also computes the possible ghost moves that can be taken (only the Ghosts moves which are possible, not all). For each Pacman move with every combination of ghosts moves, the function proceeds the game state separately. Every preceding game state is then sent to \texttt{AlphaBetascore} again as a recursive call. Once the terminal depth as initially decided is reached, the 'AlphaBetascore' function returns the goodness value of the leaf nodes. For every pacman move at a given depth, this function finds the combination of ghosts move which has the least goodness score ( i.e min ). Then the maximum of all these mins is taken and returned to the parent. 
+To perform Alpha Beta pruning, the Max of the Min is updated on the go, and hence if for a given pacman move, one of the combinations of the ghosts move has a smaller goodness than the Max of the Min, then the remaining nodes for that move are not expanded. 
+
+\subsection{Notes on Optimization Algorithms}
+The randomly generated sequences for Hill-Climbing and Simulated Annealing are completely randomly generated.  This path can run into walls, trap itself, or make otherwise nonsensical moves.  Evolution and Genetic, however, randomly generate valid paths (will not run into walls or reverse unless a mutation occurs).  This is because Evolution and Genetic algorithms make fewer generations in their allotted time than Hill-Climbing and Simulated Annealing, meaning that they require a certain degree of guidance (a head-start, so to speak) to make valid paths.  Hill-Climbing and Simulated Annealing iterate enough times to reliably make valid paths in the time they are given.
+\linebreak
+All optimization algorithms use the same evaluation function.  Evaluation returns the square of the number of pills eaten during the game, with higher values being considered better.  The square was used because some functions use evaluation as the probability of retention, and we wanted a higher distinction between good and bad values.  Also, all candidate sequences are of length 6 for all algorithms.  Adding more to a sequence brought the number of generations to unacceptably low levels in the genetic algorithm, and reducing the value decreased the foresight and negatively impacted performance.
+
+\subsection{Hill-Climbing}
+Hill-Climbing starts by randomly generating a sequence of 6 moves.  This sequence is then simulated in the forward model, enacting the next move whenever the player reaches an intersection.  It is then evaluated, measuring the square of the number of pills consumed as its evaluation function.  A copy of the candidate sequence is then made, one of the moves is randomly changed, and the new sequence is enacted.  If its goodness is higher than that of the original, it replaces the original as the return candidate.  This will continue until timeout, at which point the function returns the current candidate sequence (the best sequence found).
+
+\subsection{Simulated Annealing}
+Simulated Annealing uses a process similar to Hill-Climbing.  The main difference between the two is that in the event a mutated sequence evaluates to be worse than its parent candidate, it can still replace the parent candidate with a certain probability.  This probability is calculated as \texttt{timeratio * deficitratio}.  Timeratio decreases as time approaches timeout, and deficitratio decreases when the difference between parent and child evaluations increases.                                    
+
+\subsection{Evolution Strategy}
+For evolution strategy, we utilized the same classes as used in Simulated Annealing. We used the same \texttt{Chromosome} class as above, and the Comparator class as above that compares Chromosome objects based on its \texttt{evaluate} function. We used the $\mu$+$\lambda$ evolution strategy to make it less prone to getting stuck at local optima. At each generation, the bottom $\lambda$ candidates are removed from the gene pool, while the top $\mu$ candidates are copied, and their offspring are mutated.  The evaluation and mutation methodologies are largely similar to those found in the Simulated Annealing code.  For this implementation, population size was 10, while both  $\mu$ and $\lambda$ are 5.
+
+\subsection{Genetic Algorithm}
+For the Genetic Algorithm, during each generation, two chromosomes are selected and the function \texttt{makeBabies} is called.  This creates two child chromosomes with move sequences built using crossover between the two chosen chromosomes.  There is also a 10 percent mutation chance in the function, which will change a random action the way Hill-Climbing would.  Selection of parent chromosomes is performed using fitness proportionate roulette wheel selection.  Higher fitness chromosomes have a much higher chance of being selected for baby-making, at a rate quadratic with respect to the number of consumed pills.  At the end, the old generation is destroyed, and the new generation undergoes the same process.
+
+\subsection{Notes on Learning Algorithms}
+All learning algorithms here (K-Nearest Neighbor, Perceptron, ID3 Decision Tree) use the same training data structure, which can be found in the class \texttt{trainingData}.  This keeps track of the distance of the nearest ghost (capping at 1000), as well as objects of type \texttt{juncData}, which contains data pertaining to each possible direction.  These objects contain the points gained by taking that path, the distance of the nearest ghost after taking that path (using the proceed function to simulate this), and the end result of that path (0 for death, 1 for neutral, 2 for invincible, 3 for win).  
+\newline
+Training data was collected using a wrapper class containing a controller.  Because the group members were found to play worse than the A* agent, the wrapper was applied to the A* agent, and training data was collected based on this agent's decisions.
+
+\subsection{K-Nearest Neighbor}
+For KNN, we utilized the training data generated by using the wrapper on the A* agent class. The closest K \texttt{TrainingData}, that is, first k number of elements in the priority queue, are compared and the mode \texttt{MOVE} of the closest K is returned.  The algorithm beings by creating a \texttt{TrainingData} object based on the current situation, and then retrieves the distance from the generated data by converting the values of the data to a vector and applying the Pythagorean theorem.
+
+
+\subsection{Perceptron}
+An object of \texttt{ArrayList<Perceptron>} was generated beforehand and placed in a separate file.  This was done using the \texttt{perceptronTrainer} class, which generates four perceptrons (one for each class), and tunes it with the training data generated by the wrapper.  Each perceptron contains a 13-dimension vector for its weights, and is tuned using a learning factor of 0.01.  Because the data could be linearly inseparable, the minimum correctness to break the loop is increased over time.  The higher the error, the more iterations the trainer must go through.
+
+
+\subsection{ID3}
+The ID3 decision tree is created when an object of class \texttt{ID3Agent} is instantiated.  The tree is generated by a recursive function that takes in a set of attributes and measures the info gain should the dataset be partitioned on that attribute, partitioning on the value with the highest information gain.  The dataset is always partitioned into three pieces.  The rational here is that it does not make sense to partition \texttt{juncData.end} into more than 4 partitions or less than 3, but 4 partitions splits the tree too quickly, and so 3 is an acceptable value.  Additionally, some pruning occurs to prevent over fitting.  If the information gain from partitioning on the best attribute is less than a minimum value (0.05), the node is treated as the bottom rather than partitioned.  
+
+\section{Comparison of Algorithms}
+
+All algorithms were run in one session to collect the below data.  All learning algorithms used the same set of training data, and all algorithms played on the same set of maps.  The training data was generated beforehand by placing a wrapper around the \texttt{AStarAgent} class (which was already known to perform better than any of the group members) and having it play 20 games, collecting data during playtime.  
+
+Algorithms were tested in timed requirement against Starter Ghosts. The number of trials performed were 20.\newline
+\begin{table}[h]
+\begin{center}
+  \caption{Algorithms and benchmarks}
+\begin{tabular}{ l | l  l l l l}
+  \hline			
+algorithm &	Average &	Max &	Min &	Median &	Std. Dev.\\ \hline
+BFS &	12576.5 &	30120 &	2590 &	9055 &	7427.8 \\
+DFS &	1303.5 &	2410 &	680 &	1080 &	554.7 \\
+IDDFS &	4231 &	9990 &	1950 &	2765 &	2552.8 \\
+AStar &	11748 &	25330 &	3820 &	9325 &	6334.3 \\
+A-B Pruning &	3441.5 &	6540 &	2020 &	3125 &	1113.3 \\
+HillClimb &	2307.5 &	3410 &	1480 &	2295 &	563.39 \\
+Annealing &	2373.5 &	3510 &	1440 &	2340 &	500.27 \\
+Evolution &	7191.5 &	22090 &	2580 &	6080 &	3917.65 \\
+Genetic &	2614 &	5020 &	2100 &	2405 &	713.68 \\
+KNN &	1291.5 &	1940 &	1030 &	1285 &	231.93 \\
+Perceptron&2030&2800&870&2090 &470.32 \\
+ID3 &364&480 &	320 &350 &39.52\\ 
+Part 2 &	2771 &	5340 &	390 &	2425 &	1309.47 \\\hline
+Average All & 4117 & 8931 &	1615 & 3397 & 1939.12\\ 
+\end{tabular}
+\end{center}
+\end{table}
+
+\subsection{Breadth-First}
+Breadth-First Search was the best performing algorithm. Breadth-First Search manages to explore 10 layers per call on average, which allows it to make strong decisions as long as pills are within 10 junctions of the player.  In the late-game, when there may be no pills within 10 junctions, the agent begins to move somewhat erratically, since nearly all of its moves are of the same value.  At that point, the algorithm does well in avoiding ghosts, but not winning. 
+
+\subsection{Depth-First}
+Depth-First searches a maximun depth of 50. Under conditions in which all nodes are viable, DFS will not be able to explore all nodes in all 50 layers in the allotted time. Additionally, because PacMan has a number of loops in the maze, several meaningless paths may be explored throughout the run, taking up valuable time, and resulting in moves that, while not leading to death, are not by any means intelligent. However, being in close proximity to ghosts prunes this tree drastically, since death causes the algorithm to ignore the node's subtree. In all, it plays substantially better than a depth-unlimited search, which gets trapped in loops, but it is close to the bottom of the tree search algorithms in limited time conditions.
+
+\subsection{Iterative Deepening}
+
+Iterative Deepening performed average. As expected, it performs better than Depth-First search but worse than Breadth-First Search. It performs worse than Breadth-First search because of its low starting maximum depth. We know that, on average, the Breadth-First search manages to explore 10 layers so since Iterative Deepening starts at the node in each iteration, it re-explores the previous nodes with lesser depth. On average, it explores 7 layers for each call. It performs better than Depth-First Search for the same reason why Breadth-First performs better than Depth-First.   
+
+\subsection{A*} 
+
+A* performs almost as well as Breadth-First Search because given enough time, both BFS and A* are optimal. C would dictate that in limited time, A* would outperform BFS, these results are statistically acceptable. A two sample t-test between the two data sets yields a p-value of roughly 0.706445089, indicating that BFS is not statistically significantly better than A* in this dataset.
+
+\subsection{Alpha-Beta Pruning}
+Table 1 shows the average, minimum and maximum scores achieved when Pacman was run 20 times, using MinMax trees with Alpha Beta pruning algorithm with a depth limit of 8. These scores suggest that the implementation performs average. The standard deviation is also high. This is because the implementation increases the depth of MinMax tree by 1, every time either one of the ghosts or the pacman reaches a junction. Hence in situations, where all the ghosts and pacman reach a junction at the same instance of game for all 8 increases in depths, the pacman has a lookahead of 8 junctions. Alternatively, in situations where all ghosts and pacman reach junctions at different instances, the pacman will have a lookahead of only 1-2 junctions. Hence the final decision to decide which move to take is based on varying numbers of lookaheads for each move and hence the Pacman does not play very well. An alternative approach to this algorithm was to expand node, only when pacman reaches a junction. In that approach the lookahead of each move would havebeen the same. But as that approach assumes that ghosts will reach a junction, only when pacman reaches a junction, which is a farfetched assumption, hence we opted against using it. Moreover, as we do not consider 180 degree turn moves to decrease the size of the MinMax tree, hence pacman can get eaten at non-junction points.  
+\subsection{Hill-Climbing}
+
+Hill-Climbing performed less than average and expectedly worse than Simulated Annealing. This is due to the fact that it sometimes may be stuck at local maxiumums. Hill-climbing is also limited by the fact that the candidate sequence is limited to 6 moves, causing the agent to act erratically if there are no pills within 6 junctions.  Hill climbing processed roughly 300 candidates per run on average.
+
+\subsection{Simulated Annealing}
+
+Simulated Annealing slightly better than Hill-Climbing however it is still below average.  Although it is less likely to get stuck in local maxima than Hill-Climbing, the fact that there is only one candidate at any given time means that it is still very possible to get stuck, especially as time goes on.  Additionally, although the chance to make catastrophically bad decisions is infinitesimally small, it is non-zero, and given enough iterations, it can happen.  Simulated is also limited by the fact that the candidate sequence is limited to 6 moves, causing the agent to act erratically if there are no pills within 6 junctions.  Simulated Annealing processed roughly 300 candidates per run on average.
+
+\subsection{Evolution Strategy}
+Evolution did well above average in general and substantially better than all of the algorithms in its category. On each call, the algorithm managed to process roughly 70 generations of 10 chromosomes each.  One possible explanation for it's performance is that the Evolutionary strategy falls in a sweet spot having both relatively inexpensive generation processing and a wide reach, giving it both the iterating power of something like hill climbing as well as the exploratory power of a Genetic algorithm.  One possible reason Evolution is limited by the fact that the candidate sequence is limited to 6 moves, causing the agent to act erratically if there are no pills within 6 junctions.
+
+\subsection{Genetic Algorithm}
+On each call, the algorithm managed to process roughly 45 generations, primarily because making babies is a fairly time intensive and expensive process.  It is possible that 45 generations simply is not enough to generate a strong path in PacMan, thus limiting its play.  However, we found that decreasing sequence length to 5 actually harmed the performance of the other optimization algorithms, while slightly improving Genetic.  This behavior demonstrates just how important foresight is to an effective PacMan agent.
+
+
+\subsection{K-Nearest Neighbor}
+
+K-Nearest is the simplest of the learning algorithms. It is particularly sensitive to noisy training data. Imperfections in both the data and the means of collection mean that KNN will suffer greatly. Additionally, the trainingData only had data for the adjacent junctions, limiting foresight greatly.
+
+\subsection{Perceptron}
+
+The perceptron vector was generated beforehand using this dataset.  All four resultant perceptrons yielded error rates of roughly 25 percent, which is in line with other attempts at generating perceptron vectors on other data sets.  It is possible that the high error rate is limiting the performance of the perceptron agent.  Additionally, the trainingData only had data for the adjacent junctions, limiting foresight greatly.
+
+\subsection{ID3}
+
+ID3 was the worse performing algorithm but most consistent in its score.  The agent's quality is entirely dependent on the tree, and therefore the quality of the training data.  Additionally, the tree is fixed once generated, potentially locking the agent into a mediocre tree. ID3 is wildly inconsistent across different sets of training data, but highly consistent when using the same tree. It is possible that with a different set of training data, ID3 would play much better (internal testing confirms this).
+
+\section{Part 2 of Project}
+
+Part 2 of the project was to create a vector of perceptrons usable by the \texttt{perceptronAgent} class without the use of trainingData, but rather through repeated play and mutation.  
+
+\subsection{Reasoning}One of the biggest problems with the perceptron training was the strong possibility that the data was linearly inseparable.  Even after tuning, the perceptron created still had an error rate of roughly 25 percent.  At the same time, it is also possible that in tuning the perceptron, the weight vector got trapped in a local minimum.  In order to mitigate the possibility of both issues, a genetic algorithm would be a good way to escape local minima, and the random generations would separate perceptron tuning from training data, which may be unusable.
+
+\subsection{Implementation}
+Perceptron vectors can be generated outside of the game, and so are free to take as long as they need.  First, a population of 50 perceptron vectors is created.  Each vector has 4 perceptions, each one corresponding to one of the 4 possible moves.  The weights in these perceptions are randomly generated.  To get the fitness function, each perceptron vector is given to a perceptronAgent and made to play 10 games.  The evaluation function is the average score.  It then creates 24 pairs of babies using the makeBabies methodology outlined in section  2.11, as well as in the geneticAgent code.  However, in this case, there is a greater degree of crossover.  Additionally, mutations are handled differently, as when a mutation occurs, all weights are incremented by a Gaussian random multiplied by 0.2 (value derived from general range of weight values).  Also, this version of the genetic algorithm employs the use of elitism.  Between each generation, the two best perceptrons are carried over during the extinction event.  The perceptrons were then allowed to birth, mate, and extinct over the course of 8 hours.  The resultant vector can be found in the file evovector.txt.  
+
+\subsection{Results}
+The fitness of the top chromosome increased steadily over the first hour, at which point gains became sparser.  The fitness eventually converged by the 6 hour mark, and there were no gains after that point.  At the end, the chosen perceptron vector had a fitness of roughly 4945, indicating that at one point, the agent managed to achieve this score using the given set of perceptrons.  Part 2's results in the final experiment are shown as Part 2 in section 3.  As can be seen, the evolved perceptron outperforms normal perceptrons by a fairly substantial amount.  A 2 sample t-test yields a p-value of 0.025574399, demonstrating statistical significance.  It performs roughly as well as other algorithms, with the notable exception of the tree-search algorithms and evolution, all of which have demonstrated exceptional performance.
+
+\section {Conclusion}
+
+Considering all of the given data, we have come to believe that PacMan is simply a game that lends itself well to tree-search algorithms over optimization algorithms over learning algorithms.  This conclusion makes sense in this implementation, as most of the algorithms we wrote center on the conceptualization of the PacMan game field as a graph.  The relatively skinny but tall nature of the state tree also demonstrates the need for foresight.  A* would begin finding its solutions at around intersection 100 when reversal is disallowed.  The optimization algorithms had their foresight limited to 6 junctions, and the learning algorithms had their foresight effectively limited to 1 junction.  In a situation where pills are sparse and PacMan is far away from any of the pills, a tree search algorithm, due to its lookahead would be much able to see what other algorithms would not.  It is also important to consider the fact that the training data was somewhat mediocre, as the A* algorithm at times outperforms the authors of this paper.  While it is possible for the learning algorithms to do better with better data, it seems unlikely that it will do better than optimization in this specific problem, as it is still limited by its lack of foresight.  
+\end{document}
